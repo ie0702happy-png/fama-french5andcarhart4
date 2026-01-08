@@ -1,114 +1,196 @@
+import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
+import plotly.express as px
 import numpy as np
 
-# 設定繪圖風格
-plt.style.use('dark_background')
+# --- 1. 頁面設定 ---
+st.set_page_config(page_title="Fama-French 因子回測神器", layout="wide")
 
-def load_smart_csv_content(file_path, keywords):
+# --- 2. 核心讀檔函數 (自動跳過開頭的說明文字) ---
+@st.cache_data
+def load_ff_csv(filepath, keywords):
     """
-    讀取上傳的檔案，自動尋找表頭
+    讀取 Fama-French CSV，自動偵測表頭位置
+    keywords: 用來辨識表頭的關鍵字列表
     """
     try:
-        with open(file_path, 'r') as f:
+        with open(filepath, 'r') as f:
             lines = f.readlines()
         
-        start_row = 0
-        found = False
+        header_row = None
         for i, line in enumerate(lines):
+            # 只要該行包含關鍵字且有逗號，就認定是表頭
             if any(k in line for k in keywords) and "," in line:
-                start_row = i
-                found = True
+                header_row = i
                 break
         
-        if not found: return None
+        if header_row is None:
+            return None
+
+        # 讀取資料
+        df = pd.read_csv(filepath, skiprows=header_row, index_col=0)
         
-        # 讀取數據
-        df = pd.read_csv(file_path, skiprows=start_row, index_col=0)
-        
-        # 清洗數據
-        # 1. 確保 Index 是字串且長度為 6 (YYYYMM)
-        df = df[df.index.astype(str).str.len() == 6]
-        # 2. 轉日期
-        df.index = pd.to_datetime(df.index.astype(str), format="%Y%m")
-        # 3. 轉數值 (除以100)
-        df = df.apply(pd.to_numeric, errors='coerce') / 100
-        # 4. 去除欄位空白
-        df.columns = [c.strip() for c in df.columns]
+        # 清洗資料
+        df = df[df.index.astype(str).str.len() == 6] # 只留 YYYYMM 格式的行
+        df.index = pd.to_datetime(df.index.astype(str), format="%Y%m") # 轉成日期物件
+        df = df.apply(pd.to_numeric, errors='coerce') # 轉成數字
+        df = df / 100.0 # 原始數據是百分比(5.0)，轉成小數(0.05)
+        df.columns = [c.strip() for c in df.columns] # 去除欄位空白
         return df
     except Exception as e:
+        st.error(f"讀取 {filepath} 失敗: {e}")
         return None
 
-# 1. 讀取數據
-df_25 = load_smart_csv_content("25_Portfolios_5x5.csv", ["SMALL LoBM", "BIG HiBM"])
-df_mom = load_smart_csv_content("F-F_Momentum_Factor.csv", ["Mom"])
-df_ff5 = load_smart_csv_content("F-F_Research_Data_5_Factors_2x3.csv", ["Mkt-RF", "RF"])
+# --- 3. 主程式 ---
+st.title("🚀 Fama-French 因子投資回測系統")
 
-# 2. 數據合併
-# 時間對齊 (取交集)
-common_index = df_25.index.intersection(df_ff5.index)
+# 側邊欄設定
+with st.sidebar:
+    st.header("⚙️ 回測設定")
+    start_year = st.slider("開始年份", 1963, 2024, 1990)
+    initial_money = st.number_input("初始本金 (USD)", value=10000, step=1000)
+    st.info("請確保 csv 檔案與程式在同一目錄")
+
+# 定義檔名 (對應你下載的檔案)
+file_25 = "25_Portfolios_5x5.csv"
+file_mom = "F-F_Momentum_Factor.csv"
+file_ff5 = "F-F_Research_Data_5_Factors_2x3.csv"
+
+# 載入數據
+df_25 = load_ff_csv(file_25, ["SMALL LoBM", "BIG HiBM"])
+df_mom = load_ff_csv(file_mom, ["Mom"])
+df_ff5 = load_ff_csv(file_ff5, ["Mkt-RF", "RF"])
+
+# 檢查檔案是否都讀到了
+if df_25 is None or df_ff5 is None:
+    st.error("❌ 找不到檔案！請確認目錄下有 `25_Portfolios_5x5.csv` 和 `F-F_Research_Data_5_Factors_2x3.csv`")
+    st.stop()
+
+# --- 4. 數據整理 ---
+# 找出共同時間段
+common_idx = df_25.index.intersection(df_ff5.index)
 if df_mom is not None:
-    common_index = common_index.intersection(df_mom.index)
+    common_idx = common_idx.intersection(df_mom.index)
 
-df_final = pd.DataFrame(index=common_index)
+# 篩選年份
+common_idx = common_idx[common_idx.year >= start_year]
 
-# 映射 25 Portfolios (簡化版：取極端值做代表)
-# Small Value = SMALL HiBM (小盤價值)
-# Large Growth = BIG LoBM (大盤成長)
-# Market = Mkt-RF + RF
-df_final["Small Value"] = df_25.loc[common_index, "SMALL HiBM"]
-df_final["Large Growth"] = df_25.loc[common_index, "BIG LoBM"]
-df_final["Small Growth"] = df_25.loc[common_index, "SMALL LoBM"]
-df_final["Large Value"] = df_25.loc[common_index, "BIG HiBM"]
+# 建立總表
+data = pd.DataFrame(index=common_idx)
 
-# 加入動能
+# (1) 定義主要策略 (從 25 Portfolios 挑選)
+# 對照表: 
+# SMALL LoBM = 小盤成長 (Small Growth)
+# SMALL HiBM = 小盤價值 (Small Value)
+# BIG LoBM   = 大盤成長 (Large Growth)
+# BIG HiBM   = 大盤價值 (Large Value)
+data["Small Value"] = df_25.loc[common_idx, "SMALL HiBM"]
+data["Small Growth"] = df_25.loc[common_idx, "SMALL LoBM"]
+data["Large Value"] = df_25.loc[common_idx, "BIG HiBM"]
+data["Large Growth"] = df_25.loc[common_idx, "BIG LoBM"]
+
+# (2) 加入大盤 (Mkt = Mkt-RF + RF)
+data["Market (S&P500)"] = df_ff5.loc[common_idx, "Mkt-RF"] + df_ff5.loc[common_idx, "RF"]
+
+# (3) 加入動能 (如果有)
 if df_mom is not None:
-    col = "Mom" if "Mom" in df_mom.columns else df_mom.columns[0]
-    df_final["Momentum"] = df_mom.loc[common_index, col]
+    mom_col = "Mom" if "Mom" in df_mom.columns else df_mom.columns[0]
+    data["Momentum"] = df_mom.loc[common_idx, mom_col]
 
-# 加入大盤 (Mkt-RF + RF)
-df_final["Market (S&P500 Proxy)"] = df_ff5.loc[common_index, "Mkt-RF"] + df_ff5.loc[common_index, "RF"]
+# --- 5. 計算績效 ---
+# 財富曲線 (累計報酬)
+wealth = (1 + data).cumprod() * initial_money
 
-# 3. 過濾年份 (1990 至今，比較符合現代結構)
-start_date = "1990-01-01"
-df_calc = df_final[df_final.index >= start_date].copy()
-
-# 4. 計算累積報酬 (假設本金 10000)
-initial_capital = 10000
-df_wealth = (1 + df_calc).cumprod() * initial_capital
-
-# 5. 計算績效指標
+# 績效指標表
 metrics = []
-for col in df_calc.columns:
-    tot_ret = (1 + df_calc[col]).prod()
-    n_years = len(df_calc) / 12
-    cagr = (tot_ret ** (1 / n_years)) - 1
-    vol = df_calc[col].std() * np.sqrt(12)
-    sharpe = cagr / vol
-    
-    # Max DD
-    cum = (1 + df_calc[col]).cumprod()
-    dd = (cum / cum.cummax()) - 1
+for col in data.columns:
+    # CAGR
+    total_ret = (1 + data[col]).prod()
+    years = len(data) / 12
+    cagr = (total_ret ** (1/years)) - 1
+    # Volatility
+    vol = data[col].std() * np.sqrt(12)
+    # Sharpe (假設無風險利率簡化為0或內含)
+    sharpe = cagr / vol if vol > 0 else 0
+    # Max Drawdown
+    cum_ret = (1 + data[col]).cumprod()
+    peak = cum_ret.cummax()
+    dd = (cum_ret - peak) / peak
     max_dd = dd.min()
     
-    metrics.append([col, cagr, vol, sharpe, max_dd])
+    metrics.append({
+        "策略": col,
+        "年化報酬 (CAGR)": f"{cagr:.2%}",
+        "波動率 (Vol)": f"{vol:.2%}",
+        "夏普值 (Sharpe)": f"{sharpe:.2f}",
+        "最大回撤 (MaxDD)": f"{max_dd:.2%}"
+    })
 
-df_metrics = pd.DataFrame(metrics, columns=["Strategy", "CAGR", "Volatility", "Sharpe", "MaxDD"])
-df_metrics.set_index("Strategy", inplace=True)
+df_metrics = pd.DataFrame(metrics).set_index("策略")
 
-# 6. 繪圖
-fig, ax = plt.subplots(figsize=(12, 6))
-for col in df_wealth.columns:
-    # 畫線
-    ax.plot(df_wealth.index, df_wealth[col], label=col, linewidth=2)
+# --- 6. 視覺化儀表板 ---
+tab1, tab2, tab3 = st.tabs(["📈 財富曲線", "📊 績效指標", "🔥 風格九宮格"])
 
-ax.set_yscale('log') # 對數座標看長期複利
-ax.set_title(f'Wealth Accumulation ($10k Initial) - Log Scale ({start_date[:4]}-Present)', fontsize=14, color='white')
-ax.yaxis.set_major_formatter(mtick.StrMethodFormatter('${x:,.0f}'))
-ax.legend()
-ax.grid(True, which="both", ls="-", alpha=0.2)
+with tab1:
+    st.subheader(f"💰 {initial_money:,} 美元投入後的資產變化")
+    fig = px.line(wealth, log_y=True, title="資產成長 (對數座標)")
+    st.plotly_chart(fig, use_container_width=True)
 
-# 輸出結果
-print(df_metrics.sort_values("CAGR", ascending=False).to_markdown(floatfmt=".2%"))
-plt.show()
+with tab2:
+    st.subheader("📋 詳細風險報酬表")
+    st.dataframe(df_metrics.style.highlight_max(axis=0, color='darkgreen'), use_container_width=True)
+
+with tab3:
+    st.subheader("🇺🇸 美股風格績效矩陣 (Size vs Value)")
+    # 這裡我們手動抓 25 Portfolios 的 9 個代表點來畫九宮格
+    # 矩陣: 3x3
+    # Rows: Large(Big), Mid(ME3), Small
+    # Cols: Value(HiBM), Blend(BM3), Growth(LoBM)
+    
+    # 準備九宮格資料
+    matrix_data = {
+        "Small Value": df_25.loc[common_idx, "SMALL HiBM"].mean() * 12,
+        "Small Blend": df_25.loc[common_idx, "SMALL BM3"].mean() * 12,
+        "Small Growth": df_25.loc[common_idx, "SMALL LoBM"].mean() * 12,
+        
+        "Mid Value": df_25.loc[common_idx, "ME3 HiBM"].mean() * 12,
+        "Mid Blend": df_25.loc[common_idx, "ME3 BM3"].mean() * 12,
+        "Mid Growth": df_25.loc[common_idx, "ME3 LoBM"].mean() * 12,
+        
+        "Large Value": df_25.loc[common_idx, "BIG HiBM"].mean() * 12,
+        "Large Blend": df_25.loc[common_idx, "BIG BM3"].mean() * 12,
+        "Large Growth": df_25.loc[common_idx, "BIG LoBM"].mean() * 12,
+    }
+    
+    col1, col2, col3 = st.columns(3)
+    
+    def box(title, val, benchmark):
+        delta = val - benchmark
+        color = "green" if delta > 0 else "red"
+        return f"""
+        <div style="background-color: #262730; padding: 20px; border-radius: 10px; margin: 5px; text-align: center; border: 1px solid #4F4F4F;">
+            <h4 style="margin:0; color: #FAFAFA;">{title}</h4>
+            <h2 style="margin:10px 0; color: #FFF;">{val:.1%}</h2>
+            <p style="margin:0; color: {color}; font-size: 0.9em;">vs Mkt {delta:+.1%}</p>
+        </div>
+        """
+
+    mkt_ret = data["Market (S&P500)"].mean() * 12
+    
+    with col1:
+        st.markdown("**Value (價值)**")
+        st.markdown(box("Large Value", matrix_data["Large Value"], mkt_ret), unsafe_allow_html=True)
+        st.markdown(box("Mid Value", matrix_data["Mid Value"], mkt_ret), unsafe_allow_html=True)
+        st.markdown(box("Small Value", matrix_data["Small Value"], mkt_ret), unsafe_allow_html=True)
+        
+    with col2:
+        st.markdown("**Blend (混合)**")
+        st.markdown(box("Large Blend", matrix_data["Large Blend"], mkt_ret), unsafe_allow_html=True)
+        st.markdown(box("Mid Blend", matrix_data["Mid Blend"], mkt_ret), unsafe_allow_html=True)
+        st.markdown(box("Small Blend", matrix_data["Small Blend"], mkt_ret), unsafe_allow_html=True)
+        
+    with col3:
+        st.markdown("**Growth (成長)**")
+        st.markdown(box("Large Growth", matrix_data["Large Growth"], mkt_ret), unsafe_allow_html=True)
+        st.markdown(box("Mid Growth", matrix_data["Mid Growth"], mkt_ret), unsafe_allow_html=True)
+        st.markdown(box("Small Growth", matrix_data["Small Growth"], mkt_ret), unsafe_allow_html=True)
