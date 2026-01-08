@@ -1,233 +1,249 @@
 import streamlit as st
 import pandas as pd
-import requests
-import zipfile
-import io
 import plotly.express as px
 import numpy as np
-from datetime import datetime
 
-# --- 頁面設定 ---
+# --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="Fama-French 真實數據分析",
+    page_title="Fama-French 因子戰情室 (Pro)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CSS 美化 ---
+# --- 2. CSS 美化 (專業暗黑風格) ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; }
-    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif !important; }
+    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; color: #ffffff; }
     div[data-testid="stMetric"] {
-        background-color: #ffffff !important;
+        background-color: #1e2530 !important;
+        border: 1px solid #364156;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        padding: 10px;
     }
-    div[data-testid="stMetric"] label { color: #31333F !important; }
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] { color: #000000 !important; }
+    div[data-testid="stMetric"] label { color: #a0aab9 !important; }
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] { color: #ffffff !important; }
+    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+        font-size: 1.1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 數據讀取核心函數 ---
-def process_zip_data(zip_file, file_type):
-    """解析 Zip 檔案並清洗數據"""
+# --- 3. 智能讀檔函數 (自動略過檔頭廢話) ---
+@st.cache_data
+def load_smart_csv(filename):
+    """
+    自動偵測 CSV 表頭位置，無論前面有多少行說明文字都能讀取。
+    """
     try:
-        if isinstance(zip_file, bytes):
-            z = zipfile.ZipFile(io.BytesIO(zip_file))
-        else:
-            z = zipfile.ZipFile(zip_file)
-            
-        csv_name = z.namelist()[0]
-        try:
-            df = pd.read_csv(z.open(csv_name), skiprows=3, index_col=0)
-        except:
-            df = pd.read_csv(z.open(csv_name), index_col=0)
+        # 1. 先掃描檔案，尋找特徵關鍵字來決定從哪一行開始讀
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+        
+        start_row = 0
+        target_found = False
+        
+        # 關鍵字特徵庫
+        keywords = ["Mkt-RF", "SMALL LoBM", "Mom", "SMALL HiBM"]
+        
+        for i, line in enumerate(lines):
+            # 如果這一行包含關鍵字，且有逗號，那就是表頭
+            if any(k in line for k in keywords) and "," in line:
+                start_row = i
+                target_found = True
+                break
+        
+        if not target_found:
+            return None
 
-        # 數據清洗標準流程
-        # 1. 篩選有效日期列 (長度為6的字串, e.g., '202301')
+        # 2. 正式讀取
+        df = pd.read_csv(filename, skiprows=start_row, index_col=0)
+        
+        # 3. 清洗數據
+        # 濾掉非日期的列 (有些檔案結尾有 Copyright)
         df = df[df.index.astype(str).str.len() == 6]
-        # 2. 轉換索引為日期格式
+        # 轉換日期索引
         df.index = pd.to_datetime(df.index.astype(str), format="%Y%m")
-        # 3. 數值正規化 (原始數據通常是百分比整數，需除以100)
+        # 轉換數值 (原始數據是百分比整數，除以 100 變小數)
         df = df.astype(float) / 100
+        # 清除欄位名稱空格
+        df.columns = [c.strip() for c in df.columns]
         
         return df
+    except FileNotFoundError:
+        return None
     except Exception as e:
-        st.error(f"解析 {file_type} 失敗: {e}")
+        st.error(f"讀取 {filename} 時發生錯誤: {e}")
         return None
 
-# 自動下載函數 (作為備用)
-@st.cache_data(ttl=3600)
-def download_from_web(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=5)
-        if r.status_code == 200:
-            return r.content
-    except:
-        pass
-    return None
-
-# --- 側邊欄：數據控制中心 ---
+# --- 4. 側邊欄控制 ---
 with st.sidebar:
-    st.title("📂 數據來源設定")
-    st.info("💡 學校伺服器若擋 IP，請手動下載並上傳，保證 100% 真實數據。")
+    st.title("⚙️ 參數設定")
+    start_year = st.slider("📅 回測起始年份", 1927, 2024, 1990)
+    initial_capital = st.number_input("💰 初始本金", value=10000, step=1000)
     
-    st.markdown("### 1. 25 Portfolios (Size-Value)")
-    st.markdown("[📥 點此下載 (Dartmouth)](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/25_Portfolios_Formed_on_Size_and_Book_to_Market_CSV.zip)")
-    file_25 = st.file_uploader("上傳 25_Portfolios.zip", type=["zip", "csv"], key="f25")
-
-    st.markdown("### 2. Momentum (動能)")
-    st.markdown("[📥 點此下載 (Dartmouth)](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/10_Portfolios_Prior_12_2_CSV.zip)")
-    file_mom = st.file_uploader("上傳 10_Portfolios.zip", type=["zip", "csv"], key="fmom")
-
-    st.markdown("### 3. Fama-French 5 Factors")
-    st.markdown("[📥 點此下載 (Dartmouth)](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip)")
-    file_ff = st.file_uploader("上傳 5_Factors.zip", type=["zip", "csv"], key="fff")
-
     st.divider()
+    st.info("✅ 系統已鎖定本地 CSV 檔案")
+
+# --- 5. 主程式載入數據 ---
+st.title("🚀 Fama-French 深度因子分析")
+
+# 硬編碼你的檔案名稱 (請確保檔案在同目錄)
+file_25 = "25_Portfolios_5x5.csv"
+file_mom = "F-F_Momentum_Factor.csv"
+file_ff5 = "F-F_Research_Data_5_Factors_2x3.csv"
+
+# 載入
+df_25 = load_smart_csv(file_25)
+df_mom = load_smart_csv(file_mom)
+df_ff5 = load_smart_csv(file_ff5)
+
+# 檢查檔案是否齊全
+missing_files = []
+if df_25 is None: missing_files.append(file_25)
+if df_mom is None: missing_files.append(file_mom)
+if df_ff5 is None: missing_files.append(file_ff5)
+
+if missing_files:
+    st.error("❌ 找不到以下檔案，請確認它們跟 app.py 在同一個資料夾內：")
+    for f in missing_files:
+        st.code(f)
+    st.stop()
+
+# --- 6. 數據整合與計算 ---
+
+# 時間過濾
+mask = df_25.index.year >= start_year
+df_25 = df_25[mask]
+df_mom = df_mom[mask] if df_mom is not None else None
+df_ff5 = df_ff5[mask]
+
+# 建立總表
+df_final = pd.DataFrame(index=df_25.index)
+
+# 映射 25 Portfolios 到 風格箱 (Size-Value)
+# 根據 Fama-French 定義：
+# Small = SMALL, Big = BIG
+# Value = HiBM, Growth = LoBM, Blend = BM3
+mapping = {
+    "Large Growth": "BIG LoBM", 
+    "Large Blend": "BIG BM3",
+    "Large Value": "BIG HiBM",
+    "Mid Growth": "ME3 LoBM", # 近似中型
+    "Mid Blend": "ME3 BM3",
+    "Mid Value": "ME3 HiBM",
+    "Small Growth": "SMALL LoBM",
+    "Small Blend": "SMALL BM3",
+    "Small Value": "SMALL HiBM"
+}
+
+for ui_name, col_name in mapping.items():
+    if col_name in df_25.columns:
+        df_final[ui_name] = df_25[col_name]
+
+# 處理動能 (Momentum)
+if df_mom is not None:
+    # 通常欄位叫 'Mom'，有時候叫 '10' 或 'Hi PRIOR'，這裡做容錯
+    mom_col = "Mom" if "Mom" in df_mom.columns else df_mom.columns[-1]
+    df_final["Momentum"] = df_mom[mom_col]
+
+# 處理市場 (Market)
+mkt_col = "Mkt-RF"
+rf_col = "RF"
+df_final["Market"] = df_ff5[mkt_col] + df_ff5[rf_col] # 還原市場總報酬
+
+# 計算統計數據
+metrics = []
+for col in df_final.columns:
+    s = df_final[col]
     
-    # 參數設定
-    st.header("⚙️ 回測參數")
-    start_year = st.slider("起始年份", 1927, 2024, 1990)
-    initial_capital = st.number_input("初始本金", value=10000)
-
-# --- 主程式邏輯 ---
-st.title("🎓 Fama-French 因子分析 (真實數據版)")
-
-# 變數初始化
-df_25, df_mom, df_ff5 = None, None, None
-
-# 1. 處理 25 Portfolios
-if file_25:
-    df_25 = process_zip_data(file_25, "25 Portfolios")
-else:
-    # 嘗試自動下載
-    raw = download_from_web("https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/25_Portfolios_Formed_on_Size_and_Book_to_Market_CSV.zip")
-    if raw: df_25 = process_zip_data(raw, "25 Portfolios")
-
-# 2. 處理 Momentum
-if file_mom:
-    df_mom = process_zip_data(file_mom, "Momentum")
-else:
-    raw = download_from_web("https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/10_Portfolios_Prior_12_2_CSV.zip")
-    if raw: df_mom = process_zip_data(raw, "Momentum")
-
-# 3. 處理 Factors
-if file_ff:
-    df_ff5 = process_zip_data(file_ff, "5 Factors")
-else:
-    raw = download_from_web("https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip")
-    if raw: df_ff5 = process_zip_data(raw, "5 Factors")
-
-# --- 檢查數據是否齊全 ---
-if df_25 is None or df_mom is None or df_ff5 is None:
-    st.error("❌ 無法獲取完整數據。")
-    st.warning("""
-    **請協助完成以下步驟以獲取真實數據：**
-    1. 點擊側邊欄的連結下載 3 個 ZIP 檔案。
-    2. 將檔案分別拖曳到側邊欄對應的上傳區。
-    3. 系統將會自動開始分析。
-    """)
-    st.stop() # 停止執行，直到有數據為止
-
-# --- 數據處理與分析 (有數據才會執行到這裡) ---
-try:
-    st.success("✅ 真實數據載入成功！開始運算...")
+    # 累積報酬
+    total_ret = (1 + s).prod()
+    # 年化報酬 (CAGR)
+    cagr = (total_ret ** (12 / len(s))) - 1
+    # 年化波動率
+    vol = s.std() * np.sqrt(12)
+    # 夏普值 (假設無風險利率已內含或簡化計算)
+    sharpe = cagr / vol if vol > 0 else 0
+    # 最大回撤 (MaxDD)
+    cum_returns = (1 + s).cumprod()
+    peak = cum_returns.cummax()
+    drawdown = (cum_returns - peak) / peak
+    max_dd = drawdown.min()
     
-    # 時間篩選
-    mask = df_25.index.year >= start_year
-    df_25 = df_25[mask]
-    df_mom = df_mom[mask]
-    df_ff5 = df_ff5[mask]
+    metrics.append({
+        "Asset": col, "CAGR": cagr, "Vol": vol, "Sharpe": sharpe, "MaxDD": max_dd
+    })
 
-    # 清洗欄位名稱
-    df_25.columns = [c.strip() for c in df_25.columns]
-    df_mom.columns = [c.strip() for c in df_mom.columns]
-    df_ff5.columns = [c.strip() for c in df_ff5.columns]
+df_metrics = pd.DataFrame(metrics).set_index("Asset")
+mkt_cagr = df_metrics.loc["Market", "CAGR"]
 
-    df_final = pd.DataFrame(index=df_25.index)
+# --- 7. 視覺化呈現 ---
+
+tab1, tab2, tab3 = st.tabs(["📊 風格九宮格", "📈 財富曲線", "📋 詳細數據"])
+
+with tab1:
+    st.markdown("### 🇺🇸 美股風格箱績效矩陣")
+    st.markdown(f"*(基準: {start_year} - Present)*")
     
-    # 嚴格映射 (不再隨機填充)
-    style_map = {
-        "Large Growth": ["BIG LoBM", "BIG Lo"], 
-        "Large Blend": ["BIG BM2", "BIG 2"],
-        "Large Value": ["BIG HiBM", "BIG Hi"],
-        "Mid Growth": ["ME3 LoBM", "ME3 Lo"], 
-        "Mid Blend": ["ME3 BM3", "ME3 3"], 
-        "Mid Value": ["ME3 HiBM", "ME3 Hi"],
-        "Small Growth": ["SMALL LoBM", "SMALL Lo"], 
-        "Small Blend": ["SMALL BM3", "SMALL 3"], 
-        "Small Value": ["SMALL HiBM", "SMALL Hi"]
-    }
+    rows = ["Large", "Mid", "Small"]
+    types = ["Value", "Blend", "Growth"]
+    
+    for r in rows:
+        cols = st.columns(3)
+        for i, t in enumerate(types):
+            name = f"{r} {t}"
+            if name in df_metrics.index:
+                d = df_metrics.loc[name]
+                
+                # 顏色邏輯：贏大盤用綠色/火焰，輸大盤用灰色
+                is_winner = d['CAGR'] > mkt_cagr
+                delta_val = f"{d['CAGR'] - mkt_cagr:.1%} vs Mkt"
+                
+                cols[i].metric(
+                    label=name,
+                    value=f"{d['CAGR']:.1%}",
+                    delta=delta_val,
+                    delta_color="normal" if is_winner else "off"
+                )
 
-    for ui_name, possible_names in style_map.items():
-        for pname in possible_names:
-            if pname in df_25.columns:
-                df_final[ui_name] = df_25[pname]
-                break
-
-    # 處理動能與市場
-    if "Hi PRIOR" in df_mom.columns: df_final["Momentum"] = df_mom["Hi PRIOR"]
-    elif "10" in df_mom.columns: df_final["Momentum"] = df_mom["10"] # 舊格式容錯
-
-    mkt_col = "Mkt-RF" if "Mkt-RF" in df_ff5.columns else df_ff5.columns[0]
-    rf_col = "RF" if "RF" in df_ff5.columns else df_ff5.columns[-1]
-    df_final["Market"] = df_ff5[mkt_col] + df_ff5[rf_col]
-
-    # 計算指標
-    metrics = []
-    for col in df_final.columns:
-        s = df_final[col]
-        tot_ret = (1 + s).prod()
-        ann_ret = (tot_ret ** (12/len(s))) - 1 if len(s) > 0 else 0
-        ann_vol = s.std() * np.sqrt(12)
-        sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
-        max_dd = (s + 1).cumprod().div((s + 1).cumprod().cummax()).sub(1).min()
-        metrics.append({"Asset": col, "CAGR": ann_ret, "Vol": ann_vol, "Sharpe": sharpe, "MaxDD": max_dd})
+with tab2:
+    st.markdown("### 💰 10,000 美元投資累積價值 (對數座標)")
+    
+    # 預設挑選幾個關鍵資產畫圖
+    selected_assets = st.multiselect(
+        "選擇比較資產", 
+        df_final.columns, 
+        default=["Small Value", "Market", "Momentum", "Large Growth"]
+    )
+    
+    if selected_assets:
+        df_cum = (1 + df_final[selected_assets]).cumprod() * initial_capital
         
-    df_metrics = pd.DataFrame(metrics).set_index("Asset")
-    mkt_cagr = df_metrics.loc["Market", "CAGR"]
-
-    # --- UI 呈現 ---
-    tab1, tab2, tab3 = st.tabs(["🧩 風格九宮格", "🚀 淨值走勢", "📋 統計報表"])
-
-    with tab1:
-        st.markdown(f"#### 美股風格績效 ({start_year}-Present)")
-        rows = ["Large", "Mid", "Small"]
-        for r in rows:
-            cols = st.columns(3)
-            types = ["Value", "Blend", "Growth"]
-            for i, t in enumerate(types):
-                name = f"{r} {t}"
-                if name in df_metrics.index:
-                    d = df_metrics.loc[name]
-                    is_outperform = d["CAGR"] > mkt_cagr
-                    icon = "🔥" if is_outperform else "❄️"
-                    cols[i].metric(name, f"{d['CAGR']:.2%}", f"SR: {d['Sharpe']:.2f} {icon}")
-
-    with tab2:
-        st.markdown("#### 財富累積 (Log Scale)")
-        subset = ["Small Value", "Momentum", "Market", "Large Growth"]
-        valid = [x for x in subset if x in df_final.columns]
-        df_cum = (1 + df_final[valid]).cumprod() * initial_capital
         fig = px.line(df_cum, log_y=True, template="plotly_dark")
-        fig.update_layout(height=450)
+        fig.update_layout(
+            xaxis_title="年份",
+            yaxis_title="資產淨值 ($)",
+            legend_title="策略/資產",
+            height=500
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-    with tab3:
-        st.markdown("#### 詳細數據")
-        try:
-            st.dataframe(
-                df_metrics.style.format("{:.2%}").background_gradient(cmap="RdYlGn"),
-                use_container_width=True, height=500
-            )
-        except:
-            st.dataframe(df_metrics, use_container_width=True)
+with tab3:
+    st.markdown("### 🔢 完整風險報酬表")
+    
+    # 格式化表格
+    st.dataframe(
+        df_metrics.style.format({
+            "CAGR": "{:.2%}", 
+            "Vol": "{:.2%}", 
+            "Sharpe": "{:.2f}", 
+            "MaxDD": "{:.2%}"
+        }).background_gradient(subset=["CAGR"], cmap="Greens")
+          .background_gradient(subset=["MaxDD"], cmap="Reds_r"),
+        use_container_width=True,
+        height=600
+    )
 
-except Exception as e:
-    st.error(f"數據處理發生錯誤: {e}")
-    st.write("請確認上傳的檔案是否為 Kenneth French 官網的原始 ZIP 檔。")
+    st.markdown("---")
+    st.caption(f"資料來源: Kenneth R. French Data Library | 處理檔案: {file_25}, {file_mom}, {file_ff5}")
