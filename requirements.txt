@@ -1,6 +1,4 @@
 streamlit
 pandas
-pandas_datareader
 plotly
-numpy
-setuptools
+requests
