@@ -20,52 +20,59 @@ with st.sidebar:
     st.divider()
     st.info("""
     **🔧 技術說明**
-    此版本已移除 `pandas_datareader`，改為直接從達特茅斯學院官網下載原始 CSV 並進行解析，以解決 Python 3.13 相容性問題。
+    此版本直接從達特茅斯學院官網下載原始 CSV 並進行解析。
+    已修復 URL 格式與 User-Agent 阻擋問題。
     """)
 
 # --- 核心：直接下載並解析 Kenneth French 原始檔 ---
 @st.cache_data(ttl=86400)
 def get_fama_french_direct():
-    # 定義檔案的 URL (直接指向 Zip 檔)
+    # 修正後的正確 URL 列表
+    base_url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp"
     urls = {
-        "25_Portfolios": "http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/25_Portfolios_Formed_on_Size_and_Book-to-Market_CSV.zip",
-        "Momentum": "http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/10_Portfolios_Prior_12_2_CSV.zip",
-        "5_Factors": "http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip"
+        # 注意：這裡必須是用底線 _ 而非連字號 -
+        "25_Portfolios": f"{base_url}/25_Portfolios_Formed_on_Size_and_Book_to_Market_CSV.zip",
+        "Momentum": f"{base_url}/10_Portfolios_Prior_12_2_CSV.zip",
+        "5_Factors": f"{base_url}/F-F_Research_Data_5_Factors_2x3_CSV.zip"
+    }
+
+    # 偽裝成瀏覽器，避免 403/404 錯誤
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
 
     data = {}
 
     for key, url in urls.items():
         try:
-            # 1. 下載 Zip
-            r = requests.get(url)
-            r.raise_for_status()
-            z = zipfile.ZipFile(io.BytesIO(r.content))
+            # 發送請求
+            r = requests.get(url, headers=headers)
+            r.raise_for_status() # 檢查是否成功 (200 OK)
             
-            # 2. 讀取 CSV (通常 Zip 裡只有一個 CSV)
+            # 解壓縮
+            z = zipfile.ZipFile(io.BytesIO(r.content))
             csv_filename = z.namelist()[0]
             
-            # 3. 解析 CSV (Fama-French 的 CSV 格式很亂，需要略過標頭)
-            # 讀取前幾行來判斷實際數據從哪開始，但通常 skiprows=3 可以解決大部分
+            # 讀取 CSV (跳過前 3 行說明文字)
             df = pd.read_csv(z.open(csv_filename), skiprows=3, index_col=0)
             
-            # 4. 清理數據
-            # 原始檔下方通常有 "Annual Factors" 的說明，需要切掉
-            # 找出索引變成非日期的那一行
+            # 清理數據 (去除底部的年度統計 Annual Factors)
             rows_to_keep = []
             for idx in df.index:
                 try:
-                    # 嘗試將索引轉為數字 (YYYYMM)
-                    int(str(idx).strip()) 
-                    rows_to_keep.append(True)
+                    # 只有當索引是 6 位數日期 (YYYYMM) 時才保留
+                    if len(str(idx).strip()) == 6 and str(idx).strip().isdigit():
+                        rows_to_keep.append(True)
+                    else:
+                        rows_to_keep.append(False)
                 except:
                     rows_to_keep.append(False)
             
             df = df[rows_to_keep]
             
-            # 轉換索引為 datetime
+            # 轉換索引格式
             df.index = pd.to_datetime(df.index.astype(str), format="%Y%m", errors='coerce')
-            df = df.dropna(how='all') # 移除轉換失敗的行
+            df = df.dropna(how='all') 
             
             # 轉換數值 (原始資料是百分比，需除以 100)
             df = df.astype(float) / 100
@@ -73,20 +80,20 @@ def get_fama_french_direct():
             data[key] = df
             
         except Exception as e:
-            st.error(f"下載 {key} 失敗: {e}")
+            st.error(f"下載 {key} 失敗: {e} | URL: {url}")
             return None, None, None
 
     return data.get("25_Portfolios"), data.get("Momentum"), data.get("5_Factors")
 
 # 執行下載
-with st.spinner('正在直接連線至 Kenneth French 原始資料庫下載與解析...'):
+with st.spinner('正在連線至 Kenneth French 原始資料庫下載與解析...'):
     df_25, df_mom, df_ff5 = get_fama_french_direct()
 
 if df_25 is None:
-    st.error("⚠️ 數據下載失敗，請檢查網路連線。")
+    st.error("⚠️ 數據下載失敗，請檢查網路連線或稍後再試。")
     st.stop()
 
-# --- 數據處理與映射 (邏輯同前) ---
+# --- 數據處理與映射 ---
 try:
     # 篩選年份
     start_date = str(start_year)
@@ -94,7 +101,7 @@ try:
     df_mom = df_mom[start_date:]
     df_ff5 = df_ff5[start_date:]
 
-    # 欄位映射
+    # 九宮格映射表
     style_map = {
         "Large Growth": "BIG LoBM", "Large Blend": "BIG 3", "Large Value": "BIG HiBM",
         "Mid Growth": "ME3 LoBM", "Mid Blend": "ME3 3", "Mid Value": "ME3 HiBM",
@@ -103,34 +110,38 @@ try:
 
     df_final = pd.DataFrame(index=df_25.index)
     
-    # 填入九宮格
+    # 填入九宮格數據
+    # 先清理欄位名稱 (移除可能存在的空白)
+    df_25.columns = [c.strip() for c in df_25.columns]
+    
     for name, col in style_map.items():
-        # 清理欄位名稱空白
-        clean_cols = [c.strip() for c in df_25.columns]
-        df_25.columns = clean_cols
         if col in df_25.columns:
             df_final[name] = df_25[col]
 
-    # 填入動能 (通常是 'Hi PRIOR' 或 '10')
-    mom_cols = [c.strip() for c in df_mom.columns]
-    df_mom.columns = mom_cols
-    mom_target = "Hi PRIOR" if "Hi PRIOR" in mom_cols else "10"
+    # 填入動能數據
+    df_mom.columns = [c.strip() for c in df_mom.columns]
+    # 動能通常是 "Hi PRIOR" 或 "10"
+    mom_target = "Hi PRIOR" if "Hi PRIOR" in df_mom.columns else "10"
     if mom_target in df_mom.columns:
         df_final["Momentum"] = df_mom[mom_target]
 
-    # 填入市場因子
-    ff5_cols = [c.strip() for c in df_ff5.columns]
-    df_ff5.columns = ff5_cols
+    # 填入市場因子與其他因子
+    df_ff5.columns = [c.strip() for c in df_ff5.columns]
+    # 市場報酬 = Mkt-RF (超額報酬) + RF (無風險利率)
     df_final["Market"] = df_ff5["Mkt-RF"] + df_ff5["RF"]
 
     # --- 計算指標 ---
     metrics = []
     for col in df_final.columns:
         series = df_final[col]
+        # 總報酬
         total_ret = (1 + series).prod()
         months = len(series)
+        # 年化報酬 CAGR
         cagr = (total_ret ** (12/months)) - 1 if months > 0 else 0
+        # 年化波動率
         vol = series.std() * np.sqrt(12)
+        # 夏普值 (簡化版)
         sharpe = cagr / vol if vol != 0 else 0
         metrics.append({"Asset": col, "CAGR": cagr, "Vol": vol, "Sharpe": sharpe})
 
@@ -140,9 +151,8 @@ try:
     # --- 顯示介面 ---
     
     # 1. 九宮格
-    st.subheader(f"📊 投資風格九宮格 (CAGR, {start_year}-Present)")
+    st.subheader(f"📊 投資風格九宮格 (年化報酬 CAGR, {start_year}-Present)")
     
-    # CSS 
     st.markdown("""
     <style>
     div[data-testid="stMetric"] {background-color: #f0f2f6; border: 1px solid #d1d5db; border-radius: 5px; text-align: center; padding: 10px;}
@@ -166,22 +176,35 @@ try:
     # 2. 淨值走勢
     st.divider()
     st.subheader("🚀 世紀對決：動能 vs 價值 vs 大盤")
+    st.caption("Log Scale (對數座標) 顯示長期複利效果")
+    
     plot_cols = ["Momentum", "Small Value", "Market"]
-    df_cum = (1 + df_final[plot_cols]).cumprod() * initial_capital
-    st.plotly_chart(px.line(df_cum, log_y=True, title="資產淨值 (Log Scale)"), use_container_width=True)
+    # 確保欄位存在
+    existing_cols = [c for c in plot_cols if c in df_final.columns]
+    
+    if existing_cols:
+        df_cum = (1 + df_final[existing_cols]).cumprod() * initial_capital
+        st.plotly_chart(px.line(df_cum, log_y=True, title="資產淨值成長"), use_container_width=True)
     
     # 3. 因子溢酬
     st.divider()
     st.subheader("📐 五因子溢酬累積圖 (Factor Premia)")
-    factor_cum = (1 + df_ff5[["Mkt-RF", "SMB", "HML", "RMW", "CMA"]]).cumprod()
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption("傳統因子")
-        st.plotly_chart(px.line(factor_cum[["Mkt-RF", "SMB", "HML"]], log_y=True), use_container_width=True)
-    with c2:
-        st.caption("獲利與投資因子")
-        st.plotly_chart(px.line(factor_cum[["RMW", "CMA"]], log_y=True), use_container_width=True)
+    st.caption("顯示因子多空對沖後的累積報酬 (Long-Short Return)")
+    
+    factor_cols = ["Mkt-RF", "SMB", "HML", "RMW", "CMA"]
+    existing_factors = [c for c in factor_cols if c in df_ff5.columns]
+    
+    if existing_factors:
+        factor_cum = (1 + df_ff5[existing_factors]).cumprod()
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("傳統三因子")
+            st.plotly_chart(px.line(factor_cum[["Mkt-RF", "SMB", "HML"]], log_y=True), use_container_width=True)
+        with c2:
+            st.caption("獲利與投資因子")
+            st.plotly_chart(px.line(factor_cum[["RMW", "CMA"]], log_y=True), use_container_width=True)
 
 except Exception as e:
     st.error(f"資料處理發生錯誤: {e}")
-    st.write("這通常是因為 Kenneth French 資料格式微調導致，建議重新整理頁面。")
+    st.write("這通常是數據源格式微調導致，請嘗試重新整理頁面。")
