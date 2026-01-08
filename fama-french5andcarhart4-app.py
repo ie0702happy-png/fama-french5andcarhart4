@@ -7,28 +7,59 @@ import plotly.express as px
 import numpy as np
 from datetime import datetime
 
-# --- 頁面設定 (Dashboard 模式) ---
+# --- 頁面設定 ---
 st.set_page_config(
     page_title="Fama-French 因子戰情室",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- 自定義 CSS (UI 美化) ---
+# --- 自定義 CSS (UI 美化與深色模式修復) ---
 st.markdown("""
 <style>
-    .main { background-color: #f8f9fa; }
-    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; }
+    /* 強制設定背景色，避免深色模式下對比度問題 */
+    .stApp {
+        background-color: #0e1117; /* 深色背景適配 */
+    }
+    
+    /* 標題與文字顏色 */
+    h1, h2, h3, h4, .stMarkdown {
+        font-family: 'Helvetica Neue', sans-serif;
+    }
+
+    /* Metric 卡片優化 (關鍵修復：強制黑字白底) */
     div[data-testid="stMetric"] {
-        background-color: #ffffff;
+        background-color: #ffffff !important;
         border: 1px solid #e2e8f0;
         padding: 15px;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     div[data-testid="stMetric"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+    
+    /* 強制卡片內的文字顏色為黑色，解決深色模式下「白字白底」看不到的問題 */
+    div[data-testid="stMetric"] label {
+        color: #31333F !important; /* 標題深灰 */
+    }
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #000000 !important; /* 數值純黑 */
+    }
+    div[data-testid="stMetric"] div[data-testid="stMetricDelta"] {
+        /* Delta 顏色保持預設 (紅/綠) */
+    }
+
+    /* Tab 分頁樣式 */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 40px;
+        white-space: pre-wrap;
+        border-radius: 4px;
+        padding: 0 16px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -48,9 +79,9 @@ def generate_dummy_data():
         "ME4 LoBM", "ME4 BM2", "ME4 BM3", "ME4 BM4", "ME4 HiBM",
         "BIG LoBM", "BIG BM2", "BIG BM3", "BIG BM4", "BIG HiBM"
     ]
+    # 調整參數讓數據看起來更像真實市場
     data_25 = np.random.normal(0.008, 0.05, size=(n, 25)) 
-    # 調整 Small Value 讓它表現好一點
-    data_25[:, 4] = data_25[:, 4] + 0.002 
+    data_25[:, 4] = data_25[:, 4] + 0.0025 # Small Value 加強
     df_25 = pd.DataFrame(data_25, index=dates, columns=cols_25)
 
     # 模擬 Momentum
@@ -82,9 +113,10 @@ def get_fama_french_safe():
 
     data_store = {}
     
-    for key, fname in targets.items():
-        try:
-            r = requests.get(f"{base_url}/{fname}", headers=headers, timeout=3)
+    # 只要任何一個下載失敗，就直接回傳 False 切換到模擬模式
+    try:
+        for key, fname in targets.items():
+            r = requests.get(f"{base_url}/{fname}", headers=headers, timeout=5)
             if r.status_code != 200: return None, None, None, False
             
             z = zipfile.ZipFile(io.BytesIO(r.content))
@@ -94,12 +126,13 @@ def get_fama_french_safe():
             except:
                 df = pd.read_csv(z.open(csv_name), index_col=0)
 
+            # 簡單清洗
             df = df[df.index.astype(str).str.len() == 6]
             df.index = pd.to_datetime(df.index.astype(str), format="%Y%m")
             df = df.astype(float) / 100
             data_store[key] = df
-        except:
-            return None, None, None, False
+    except:
+        return None, None, None, False
 
     return data_store.get("25"), data_store.get("mom"), data_store.get("ff5"), True
 
@@ -109,34 +142,38 @@ with st.sidebar:
     start_year = st.slider("📅 回測起始年份", 1930, 2023, 2000)
     initial_capital = st.number_input("💰 初始本金 ($)", value=10000, step=1000)
     
+    st.divider()
     st.markdown("### 📊 資料源狀態")
     status_box = st.empty()
 
 # --- 資料載入 ---
-with st.spinner('🚀 系統初始化中...'):
+with st.spinner('🚀 系統正在連線 Kenneth French 資料庫...'):
     df_25, df_mom, df_ff5, is_real = get_fama_french_safe()
 
 if not is_real:
     df_25, df_mom, df_ff5 = generate_dummy_data()
-    status_box.warning("模擬數據模式")
-    st.warning("⚠️ **網路連線限制提示**：已切換至「演示模式」。當前數據為演算法生成。")
+    status_box.warning("⚠️ 模擬數據 (Demo)")
+    st.warning("⚠️ **連線提示**：因學校伺服器阻擋，系統已自動切換至「演示模式」。(當前數據為演算法生成，僅供測試 UI)")
 else:
-    status_box.success("真實數據連線")
+    status_box.success("✅ 真實數據 (Live)")
     st.success("✅ **連線成功**：成功獲取 Kenneth R. French 原始數據庫。")
 
 # --- 數據處理 ---
 try:
+    # 篩選年份
     mask = df_25.index.year >= start_year
     df_25 = df_25[mask]
     df_mom = df_mom[mask]
     df_ff5 = df_ff5[mask]
 
+    # 清洗欄位名稱
     df_25.columns = [c.strip() for c in df_25.columns]
     df_mom.columns = [c.strip() for c in df_mom.columns]
     df_ff5.columns = [c.strip() for c in df_ff5.columns]
 
     df_final = pd.DataFrame(index=df_25.index)
     
+    # 風格映射邏輯
     style_map = {
         "Large Growth": ["BIG LoBM", "BIG Lo"], 
         "Large Blend": ["BIG BM2", "BIG 2", "BIG 3"],
@@ -157,8 +194,9 @@ try:
                 found = True
                 break
         if not found:
-             df_final[ui_name] = df_25.iloc[:, 0]
+             df_final[ui_name] = df_25.iloc[:, 0] # 容錯填充
 
+    # 動能與市場因子
     mom_col = "Hi PRIOR" if "Hi PRIOR" in df_mom.columns else df_mom.columns[-1]
     df_final["Momentum"] = df_mom[mom_col]
     
@@ -166,6 +204,7 @@ try:
     rf_col = "RF" if "RF" in df_ff5.columns else df_ff5.columns[-1]
     df_final["Market"] = df_ff5[mkt_col] + df_ff5[rf_col]
 
+    # 計算統計指標
     metrics = []
     for col in df_final.columns:
         s = df_final[col]
@@ -188,11 +227,10 @@ try:
     
     tab1, tab2, tab3 = st.tabs(["🧩 風格九宮格", "🚀 淨值與因子走勢", "📋 詳細統計數據"])
 
-    # === Tab 1 ===
+    # === Tab 1: 風格九宮格 ===
     with tab1:
         st.markdown("#### 美股風格績效矩陣 (Size vs. Value)")
         rows = ["Large", "Mid", "Small"]
-        cols = ["Value", "Blend", "Growth"]
         
         for r in rows:
             c1, c2, c3 = st.columns(3)
@@ -215,7 +253,7 @@ try:
                             delta_color=delta_color
                         )
 
-    # === Tab 2 ===
+    # === Tab 2: 圖表 ===
     with tab2:
         col_charts_1, col_charts_2 = st.columns([2, 1])
         with col_charts_1:
@@ -223,8 +261,9 @@ try:
             plot_assets = ["Small Value", "Momentum", "Large Growth", "Market"]
             valid_plot = [x for x in plot_assets if x in df_final.columns]
             df_cum = (1 + df_final[valid_plot]).cumprod() * initial_capital
-            fig = px.line(df_cum, log_y=True, color_discrete_sequence=px.colors.qualitative.G10)
-            fig.update_layout(xaxis_title="", yaxis_title="資產淨值", height=400)
+            
+            fig = px.line(df_cum, log_y=True, color_discrete_sequence=px.colors.qualitative.Bold)
+            fig.update_layout(xaxis_title="", yaxis_title="資產淨值", height=400, template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
 
         with col_charts_2:
@@ -233,19 +272,17 @@ try:
             valid_factors = [x for x in factors if x in df_ff5.columns]
             if valid_factors:
                 df_fac_cum = (1 + df_ff5[valid_factors]).cumprod()
-                fig2 = px.line(df_fac_cum, log_y=True)
-                fig2.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.2), height=400)
+                fig2 = px.line(df_fac_cum, log_y=True, color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig2.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.3), height=400, template="plotly_dark")
                 st.plotly_chart(fig2, use_container_width=True)
 
-    # === Tab 3 (修復崩潰點) ===
+    # === Tab 3: 表格 (防崩潰修復) ===
     with tab3:
         st.markdown("#### 📊 各類資產風險報酬統計表")
-        
         display_df = df_metrics.copy()
         
-        # 這裡加上 Try-Except，如果 matplotlib 沒裝好，就顯示普通表格，不要報錯
+        # 使用 try-except 包裹樣式渲染，即使缺少依賴也能顯示數據
         try:
-            import matplotlib
             st.dataframe(
                 display_df.style.format({
                     "CAGR": "{:.2%}", "Vol": "{:.2%}", "Sharpe": "{:.2f}", "MaxDD": "{:.2%}"
@@ -254,9 +291,9 @@ try:
                 use_container_width=True, 
                 height=400
             )
-        except ImportError:
-            # 降級處理：只顯示格式化後的表格，不顯示顏色
-            st.warning("⚠️ 系統檢測到缺少 matplotlib 繪圖庫，表格將以純文字顯示。")
+        except Exception as e:
+            # 如果渲染失敗，顯示純文字表格
+            st.caption(f"⚠️ 樣式渲染受限 (Fallback Mode): {str(e)}")
             st.dataframe(display_df, use_container_width=True, height=400)
 
 except Exception as e:
