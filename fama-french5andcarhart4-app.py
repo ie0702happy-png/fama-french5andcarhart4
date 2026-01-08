@@ -4,7 +4,6 @@ import requests
 import zipfile
 import io
 import plotly.express as px
-import plotly.graph_objects as go
 import numpy as np
 from datetime import datetime
 
@@ -15,51 +14,26 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 自定義 CSS (讓 UI 變漂亮的關鍵) ---
+# --- 自定義 CSS (UI 美化) ---
 st.markdown("""
 <style>
-    /* 全局字體與背景 */
-    .main {
-        background-color: #f8f9fa;
-    }
-    /* 標題樣式 */
-    h1, h2, h3 {
-        color: #0f172a;
-        font-family: 'Helvetica Neue', sans-serif;
-    }
-    /* Metric 卡片優化 */
+    .main { background-color: #f8f9fa; }
+    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; }
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         padding: 15px;
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        transition: transform 0.2s;
     }
     div[data-testid="stMetric"]:hover {
         transform: translateY(-2px);
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    /* 調整 Tab 樣式 */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 24px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        white-space: pre-wrap;
-        background-color: #ffffff;
-        border-radius: 4px;
-        color: #64748b;
-        font-weight: 600;
-    }
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background-color: #e0e7ff;
-        color: #4f46e5;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 核心邏輯 (保持不變，因為這部分已經通過測試) ---
+# --- 核心邏輯 ---
 
 def generate_dummy_data():
     """生成高擬真模擬數據"""
@@ -74,9 +48,8 @@ def generate_dummy_data():
         "ME4 LoBM", "ME4 BM2", "ME4 BM3", "ME4 BM4", "ME4 HiBM",
         "BIG LoBM", "BIG BM2", "BIG BM3", "BIG BM4", "BIG HiBM"
     ]
-    # 稍微調整參數讓模擬數據更有趣 (Small Value 高報酬高波動)
     data_25 = np.random.normal(0.008, 0.05, size=(n, 25)) 
-    # 讓 Small Value (第5欄) 表現稍微好一點以符合學術發現
+    # 調整 Small Value 讓它表現好一點
     data_25[:, 4] = data_25[:, 4] + 0.002 
     df_25 = pd.DataFrame(data_25, index=dates, columns=cols_25)
 
@@ -98,7 +71,7 @@ def generate_dummy_data():
 def get_fama_french_safe():
     base_url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html"
     }
     targets = {
@@ -109,7 +82,6 @@ def get_fama_french_safe():
 
     data_store = {}
     
-    # 為了讓UI展示順暢，這裡若失敗直接回傳 False，讓外層切換
     for key, fname in targets.items():
         try:
             r = requests.get(f"{base_url}/{fname}", headers=headers, timeout=3)
@@ -122,7 +94,6 @@ def get_fama_french_safe():
             except:
                 df = pd.read_csv(z.open(csv_name), index_col=0)
 
-            # 快速清洗
             df = df[df.index.astype(str).str.len() == 6]
             df.index = pd.to_datetime(df.index.astype(str), format="%Y%m")
             df = df.astype(float) / 100
@@ -135,15 +106,11 @@ def get_fama_french_safe():
 # --- 側邊欄 ---
 with st.sidebar:
     st.title("⚙️ 策略參數")
-    st.markdown("---")
     start_year = st.slider("📅 回測起始年份", 1930, 2023, 2000)
     initial_capital = st.number_input("💰 初始本金 ($)", value=10000, step=1000)
     
     st.markdown("### 📊 資料源狀態")
     status_box = st.empty()
-    
-    st.markdown("---")
-    st.caption("Developed with Streamlit & Plotly")
 
 # --- 資料載入 ---
 with st.spinner('🚀 系統初始化中...'):
@@ -151,32 +118,28 @@ with st.spinner('🚀 系統初始化中...'):
 
 if not is_real:
     df_25, df_mom, df_ff5 = generate_dummy_data()
-    status_box.warning("⚠️ 模擬數據模式 (連線受阻)")
-    # 在主畫面頂部顯示漂亮的警告條
-    st.warning("⚠️ **網路連線限制提示**：由於學校伺服器阻擋，系統已自動切換至 **「演示模式」**。當前數據為演算法生成，僅供 UI 與功能展示。")
+    status_box.warning("模擬數據模式")
+    st.warning("⚠️ **網路連線限制提示**：已切換至「演示模式」。當前數據為演算法生成。")
 else:
-    status_box.success("✅ 真實數據連線")
+    status_box.success("真實數據連線")
     st.success("✅ **連線成功**：成功獲取 Kenneth R. French 原始數據庫。")
 
 # --- 數據處理 ---
 try:
-    # 統一時間與欄位
     mask = df_25.index.year >= start_year
     df_25 = df_25[mask]
     df_mom = df_mom[mask]
     df_ff5 = df_ff5[mask]
 
-    # 建立 df_final
     df_25.columns = [c.strip() for c in df_25.columns]
     df_mom.columns = [c.strip() for c in df_mom.columns]
     df_ff5.columns = [c.strip() for c in df_ff5.columns]
 
     df_final = pd.DataFrame(index=df_25.index)
     
-    # 映射表
     style_map = {
         "Large Growth": ["BIG LoBM", "BIG Lo"], 
-        "Large Blend": ["BIG BM2", "BIG 2", "BIG 3"], # 增加容錯
+        "Large Blend": ["BIG BM2", "BIG 2", "BIG 3"],
         "Large Value": ["BIG HiBM", "BIG Hi"],
         "Mid Growth": ["ME3 LoBM", "ME3 Lo"], 
         "Mid Blend": ["ME3 BM3", "ME3 3"], 
@@ -193,11 +156,9 @@ try:
                 df_final[ui_name] = df_25[pname]
                 found = True
                 break
-        if not found: # 模擬模式下的容錯
-             # 如果真的找不到，用隨機一欄代替，避免 UI 壞掉
+        if not found:
              df_final[ui_name] = df_25.iloc[:, 0]
 
-    # 動能與市場
     mom_col = "Hi PRIOR" if "Hi PRIOR" in df_mom.columns else df_mom.columns[-1]
     df_final["Momentum"] = df_mom[mom_col]
     
@@ -205,7 +166,6 @@ try:
     rf_col = "RF" if "RF" in df_ff5.columns else df_ff5.columns[-1]
     df_final["Market"] = df_ff5[mkt_col] + df_ff5[rf_col]
 
-    # 計算指標
     metrics = []
     for col in df_final.columns:
         s = df_final[col]
@@ -226,23 +186,16 @@ try:
     
     st.markdown(f"### 📈 市場回測分析報告 ({start_year} - Present)")
     
-    # 建立分頁
-    tab1, tab2, tab3 = st.tabs(["🧩 風格九宮格 (Smart Beta)", "🚀 淨值與因子走勢", "📋 詳細統計數據"])
+    tab1, tab2, tab3 = st.tabs(["🧩 風格九宮格", "🚀 淨值與因子走勢", "📋 詳細統計數據"])
 
-    # === Tab 1: 風格九宮格 ===
+    # === Tab 1 ===
     with tab1:
         st.markdown("#### 美股風格績效矩陣 (Size vs. Value)")
-        st.caption("指標說明：年化報酬率 (CAGR) | 顏色標示：🔥 優於大盤 / ❄️ 落後大盤")
-        
         rows = ["Large", "Mid", "Small"]
-        cols = ["Value", "Blend", "Growth"] # 注意：通常圖表左邊是Value，右邊是Growth，或反過來。這裡依據習慣排列
-        
-        # 為了 UI 美觀，我們把 Growth 放右邊，Value 放左邊，或者依照晨星風格箱 (Value-Blend-Growth)
-        # 這裡採用: Value (左) -> Blend (中) -> Growth (右)
+        cols = ["Value", "Blend", "Growth"]
         
         for r in rows:
             c1, c2, c3 = st.columns(3)
-            # 依照 Value, Blend, Growth 順序
             col_order = [c1, c2, c3]
             types = ["Value", "Blend", "Growth"]
             
@@ -251,8 +204,8 @@ try:
                 if name in df_metrics.index:
                     d = df_metrics.loc[name]
                     is_outperform = d["CAGR"] > mkt_cagr
-                    delta_color = "normal" if is_outperform else "off"
                     icon = "🔥" if is_outperform else "❄️"
+                    delta_color = "normal" if is_outperform else "off"
                     
                     with col_order[idx]:
                         st.metric(
@@ -261,63 +214,50 @@ try:
                             delta=f"Sharpe: {d['Sharpe']:.2f} {icon}",
                             delta_color=delta_color
                         )
-        
-        st.info("💡 **九宮格解讀**：歷史上「小盤價值股 (Small Value)」通常具有較高的長期溢酬（Fama-French 三因子模型核心發現）。")
 
-    # === Tab 2: 圖表分析 ===
+    # === Tab 2 ===
     with tab2:
         col_charts_1, col_charts_2 = st.columns([2, 1])
-        
         with col_charts_1:
             st.markdown("#### 💰 財富累積曲線 (Log Scale)")
-            # 選擇重點資產繪圖
             plot_assets = ["Small Value", "Momentum", "Large Growth", "Market"]
             valid_plot = [x for x in plot_assets if x in df_final.columns]
-            
             df_cum = (1 + df_final[valid_plot]).cumprod() * initial_capital
-            
             fig = px.line(df_cum, log_y=True, color_discrete_sequence=px.colors.qualitative.G10)
-            fig.update_layout(
-                xaxis_title="", yaxis_title="資產淨值 ($)",
-                legend_title="資產類別",
-                hovermode="x unified",
-                template="plotly_white",
-                height=400,
-                margin=dict(l=20, r=20, t=20, b=20)
-            )
+            fig.update_layout(xaxis_title="", yaxis_title="資產淨值", height=400)
             st.plotly_chart(fig, use_container_width=True)
 
         with col_charts_2:
-            st.markdown("#### 📐 因子多空對沖表現")
+            st.markdown("#### 📐 因子表現")
             factors = ["SMB", "HML", "RMW", "CMA"]
             valid_factors = [x for x in factors if x in df_ff5.columns]
             if valid_factors:
                 df_fac_cum = (1 + df_ff5[valid_factors]).cumprod()
                 fig2 = px.line(df_fac_cum, log_y=True)
-                fig2.update_layout(
-                    template="plotly_white",
-                    showlegend=True,
-                    legend=dict(orientation="h", y=-0.2),
-                    height=400,
-                    margin=dict(l=20, r=20, t=20, b=20)
-                )
+                fig2.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.2), height=400)
                 st.plotly_chart(fig2, use_container_width=True)
 
-    # === Tab 3: 詳細數據表格 ===
+    # === Tab 3 (修復崩潰點) ===
     with tab3:
         st.markdown("#### 📊 各類資產風險報酬統計表")
         
-        # 格式化表格
         display_df = df_metrics.copy()
-        display_df = display_df.style.format({
-            "CAGR": "{:.2%}",
-            "Vol": "{:.2%}",
-            "Sharpe": "{:.2f}",
-            "MaxDD": "{:.2%}"
-        }).background_gradient(subset=["CAGR", "Sharpe"], cmap="Greens")\
-          .background_gradient(subset=["MaxDD"], cmap="Reds_r")
         
-        st.dataframe(display_df, use_container_width=True, height=400)
+        # 這裡加上 Try-Except，如果 matplotlib 沒裝好，就顯示普通表格，不要報錯
+        try:
+            import matplotlib
+            st.dataframe(
+                display_df.style.format({
+                    "CAGR": "{:.2%}", "Vol": "{:.2%}", "Sharpe": "{:.2f}", "MaxDD": "{:.2%}"
+                }).background_gradient(subset=["CAGR", "Sharpe"], cmap="Greens")
+                  .background_gradient(subset=["MaxDD"], cmap="Reds_r"),
+                use_container_width=True, 
+                height=400
+            )
+        except ImportError:
+            # 降級處理：只顯示格式化後的表格，不顯示顏色
+            st.warning("⚠️ 系統檢測到缺少 matplotlib 繪圖庫，表格將以純文字顯示。")
+            st.dataframe(display_df, use_container_width=True, height=400)
 
 except Exception as e:
     st.error("系統運算錯誤，請刷新頁面。")
