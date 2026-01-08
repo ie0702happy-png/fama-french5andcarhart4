@@ -19,15 +19,15 @@ st.markdown("""
 <style>
     /* 強制設定背景色，避免深色模式下對比度問題 */
     .stApp {
-        background-color: #0e1117; /* 深色背景適配 */
+        background-color: #0e1117;
     }
     
-    /* 標題與文字顏色 */
-    h1, h2, h3, h4, .stMarkdown {
-        font-family: 'Helvetica Neue', sans-serif;
+    /* 字體設定 */
+    h1, h2, h3, h4, .stMarkdown, .stMetricLabel {
+        font-family: 'Helvetica Neue', sans-serif !important;
     }
 
-    /* Metric 卡片優化 (關鍵修復：強制黑字白底) */
+    /* Metric 卡片優化 (強制黑字白底) */
     div[data-testid="stMetric"] {
         background-color: #ffffff !important;
         border: 1px solid #e2e8f0;
@@ -40,15 +40,12 @@ st.markdown("""
         box-shadow: 0 4px 8px rgba(0,0,0,0.3);
     }
     
-    /* 強制卡片內的文字顏色為黑色，解決深色模式下「白字白底」看不到的問題 */
+    /* 強制卡片內的文字顏色為黑色 */
     div[data-testid="stMetric"] label {
         color: #31333F !important; /* 標題深灰 */
     }
     div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
         color: #000000 !important; /* 數值純黑 */
-    }
-    div[data-testid="stMetric"] div[data-testid="stMetricDelta"] {
-        /* Delta 顏色保持預設 (紅/綠) */
     }
 
     /* Tab 分頁樣式 */
@@ -67,8 +64,9 @@ st.markdown("""
 # --- 核心邏輯 ---
 
 def generate_dummy_data():
-    """生成高擬真模擬數據"""
-    dates = pd.date_range(start="1927-01-01", end=datetime.today(), freq="M")
+    """生成高擬真模擬數據 (1927 - Present)"""
+    # 確保模擬數據也是從 1927 開始
+    dates = pd.date_range(start="1927-07-01", end=datetime.today(), freq="M")
     n = len(dates)
     
     # 模擬 25 Portfolios
@@ -79,8 +77,8 @@ def generate_dummy_data():
         "ME4 LoBM", "ME4 BM2", "ME4 BM3", "ME4 BM4", "ME4 HiBM",
         "BIG LoBM", "BIG BM2", "BIG BM3", "BIG BM4", "BIG HiBM"
     ]
-    # 調整參數讓數據看起來更像真實市場
-    data_25 = np.random.normal(0.008, 0.05, size=(n, 25)) 
+    # 調整參數讓數據看起來更像真實市場 (長線向上)
+    data_25 = np.random.normal(0.008, 0.055, size=(n, 25)) 
     data_25[:, 4] = data_25[:, 4] + 0.0025 # Small Value 加強
     df_25 = pd.DataFrame(data_25, index=dates, columns=cols_25)
 
@@ -92,7 +90,7 @@ def generate_dummy_data():
 
     # 模擬 5 Factors
     cols_ff = ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "RF"]
-    data_ff = np.random.normal(0.005, 0.03, size=(n, 6))
+    data_ff = np.random.normal(0.005, 0.04, size=(n, 6)) # 稍微增加波動率模擬早期市場
     data_ff[:, 5] = np.abs(np.random.normal(0.002, 0.0005, size=n))
     df_ff = pd.DataFrame(data_ff, index=dates, columns=cols_ff)
 
@@ -113,7 +111,6 @@ def get_fama_french_safe():
 
     data_store = {}
     
-    # 只要任何一個下載失敗，就直接回傳 False 切換到模擬模式
     try:
         for key, fname in targets.items():
             r = requests.get(f"{base_url}/{fname}", headers=headers, timeout=5)
@@ -126,7 +123,6 @@ def get_fama_french_safe():
             except:
                 df = pd.read_csv(z.open(csv_name), index_col=0)
 
-            # 簡單清洗
             df = df[df.index.astype(str).str.len() == 6]
             df.index = pd.to_datetime(df.index.astype(str), format="%Y%m")
             df = df.astype(float) / 100
@@ -139,7 +135,11 @@ def get_fama_french_safe():
 # --- 側邊欄 ---
 with st.sidebar:
     st.title("⚙️ 策略參數")
-    start_year = st.slider("📅 回測起始年份", 1930, 2023, 2000)
+    
+    # === 修改點：時間軸全開 (1927 - Present) ===
+    current_year = datetime.today().year
+    start_year = st.slider("📅 回測起始年份", 1927, current_year, 1927) # 預設值設為 1927
+    
     initial_capital = st.number_input("💰 初始本金 ($)", value=10000, step=1000)
     
     st.divider()
@@ -153,7 +153,7 @@ with st.spinner('🚀 系統正在連線 Kenneth French 資料庫...'):
 if not is_real:
     df_25, df_mom, df_ff5 = generate_dummy_data()
     status_box.warning("⚠️ 模擬數據 (Demo)")
-    st.warning("⚠️ **連線提示**：因學校伺服器阻擋，系統已自動切換至「演示模式」。(當前數據為演算法生成，僅供測試 UI)")
+    st.warning(f"⚠️ **連線提示**：目前顯示「演示模式」數據 (範圍: 1927-{current_year})。因學校網路限制，無法下載真實歷史數據。")
 else:
     status_box.success("✅ 真實數據 (Live)")
     st.success("✅ **連線成功**：成功獲取 Kenneth R. French 原始數據庫。")
@@ -209,8 +209,14 @@ try:
     for col in df_final.columns:
         s = df_final[col]
         tot_ret = (1 + s).prod()
-        ann_ret = (tot_ret ** (12/len(s))) - 1
-        ann_vol = s.std() * np.sqrt(12)
+        # 處理資料不足 1 年的情況
+        if len(s) > 0:
+            ann_ret = (tot_ret ** (12/len(s))) - 1
+            ann_vol = s.std() * np.sqrt(12)
+        else:
+            ann_ret = 0
+            ann_vol = 0
+            
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
         max_dd = (s + 1).cumprod().div((s + 1).cumprod().cummax()).sub(1).min()
         
@@ -262,6 +268,7 @@ try:
             valid_plot = [x for x in plot_assets if x in df_final.columns]
             df_cum = (1 + df_final[valid_plot]).cumprod() * initial_capital
             
+            # 使用 Plotly Dark Template 適配深色背景
             fig = px.line(df_cum, log_y=True, color_discrete_sequence=px.colors.qualitative.Bold)
             fig.update_layout(xaxis_title="", yaxis_title="資產淨值", height=400, template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
@@ -276,13 +283,13 @@ try:
                 fig2.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.3), height=400, template="plotly_dark")
                 st.plotly_chart(fig2, use_container_width=True)
 
-    # === Tab 3: 表格 (防崩潰修復) ===
+    # === Tab 3: 表格 (防崩潰 + 視覺優化) ===
     with tab3:
         st.markdown("#### 📊 各類資產風險報酬統計表")
         display_df = df_metrics.copy()
         
-        # 使用 try-except 包裹樣式渲染，即使缺少依賴也能顯示數據
         try:
+            # 嘗試渲染漂亮的漸層表格
             st.dataframe(
                 display_df.style.format({
                     "CAGR": "{:.2%}", "Vol": "{:.2%}", "Sharpe": "{:.2f}", "MaxDD": "{:.2%}"
@@ -292,8 +299,8 @@ try:
                 height=400
             )
         except Exception as e:
-            # 如果渲染失敗，顯示純文字表格
-            st.caption(f"⚠️ 樣式渲染受限 (Fallback Mode): {str(e)}")
+            # 降級處理 (Fallback)
+            st.caption(f"⚠️ 視覺渲染受限 (Fallback Mode): {str(e)}")
             st.dataframe(display_df, use_container_width=True, height=400)
 
 except Exception as e:
