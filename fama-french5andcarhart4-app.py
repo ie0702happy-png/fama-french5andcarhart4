@@ -21,8 +21,8 @@ with st.sidebar:
     st.info("""
     **🔧 系統狀態**
     - 模式：直接連線 (不依賴 pandas_datareader)
-    - Python版本相容：已修復
-    - 連線修正：已加入瀏覽器偽裝
+    - Python版本相容：已修復 (支援 3.10+)
+    - 連線修正：已加入瀏覽器偽裝與多重路徑備援
     """)
 
 # --- 核心：智慧下載與解析函數 ---
@@ -34,8 +34,8 @@ def get_fama_french_data():
     # 格式: (Key, [List of possible filenames])
     files_config = {
         "25_Portfolios": [
-            "25_Portfolios_Formed_on_Size_and_Book_to_Market_CSV.zip",
-            "25_Portfolios_Formed_on_Size_and_Book_to_Market_5_x_5_CSV.zip"
+            "25_Portfolios_Formed_on_Size_and_Book_to_Market_CSV.zip",       # 標準格式
+            "25_Portfolios_Formed_on_Size_and_Book_to_Market_5_x_5_CSV.zip" # 變體格式
         ],
         "Momentum": [
             "10_Portfolios_Prior_12_2_CSV.zip"
@@ -58,14 +58,14 @@ def get_fama_french_data():
             url = f"{base_url}/{fname}"
             try:
                 # 嘗試下載
-                r = requests.get(url, headers=headers, timeout=10)
+                r = requests.get(url, headers=headers, timeout=15)
                 if r.status_code == 200:
                     # 解壓縮
                     z = zipfile.ZipFile(io.BytesIO(r.content))
                     csv_name = z.namelist()[0]
                     
                     # 智慧讀取：嘗試跳過不同行數來尋找正確的表頭
-                    # 通常是 skiprows=3，但有時候會變
+                    # Kenneth French 的 CSV 通常前 3 行是說明文字
                     df = None
                     try:
                         df = pd.read_csv(z.open(csv_name), skiprows=3, index_col=0)
@@ -76,7 +76,7 @@ def get_fama_french_data():
                     # 數據清理標準化
                     if df is not None:
                         # 1. 確保 Index 是日期格式 (YYYYMM)
-                        # 過濾掉非數字的 Index (例如檔案底部的版權聲明)
+                        # 過濾掉非數字的 Index (例如檔案底部的版權聲明或 Annual Factors)
                         rows_to_keep = []
                         for idx in df.index:
                             s_idx = str(idx).strip()
@@ -101,7 +101,7 @@ def get_fama_french_data():
                 continue
         
         if not success:
-            st.error(f"❌ 無法下載數據: {key} (已嘗試所有備援網址)")
+            st.error(f"❌ 無法下載數據: {key} (已嘗試所有備援網址，請稍後再試)")
             return None, None, None
 
     return results.get("25_Portfolios"), results.get("Momentum"), results.get("5_Factors")
@@ -140,10 +140,13 @@ try:
     # 2. 加入動能 (Momentum)
     # 動能通常在 "Hi PRIOR" 或 "10" (第10組，最高動能)
     df_mom.columns = [c.strip() for c in df_mom.columns]
+    # 嘗試抓取最高動能組別
     if "Hi PRIOR" in df_mom.columns:
         df_final["Momentum"] = df_mom["Hi PRIOR"]
     elif "10" in df_mom.columns:
         df_final["Momentum"] = df_mom["10"]
+    elif "High" in df_mom.columns: 
+        df_final["Momentum"] = df_mom["High"]
 
     # 3. 加入市場 (Market)
     df_ff5.columns = [c.strip() for c in df_ff5.columns]
